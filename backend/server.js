@@ -14,6 +14,12 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Ruta no encontrada' });
 });
 
+// Manejador de errores centralizado (por si algún controlador olvida un try/catch)
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ error: 'Error interno del servidor' });
+});
+
 const PORT = process.env.PORT || 4000;
 
 if (require.main === module) {
