@@ -1,30 +1,60 @@
 const { z } = require('zod');
 const pedidosService = require('../services/pedidos.service');
+const { esComensal } = require('../middleware/auth.middleware');
 
+// El apodo es el nombre que el comensal se puso en el carrito colaborativo
+// ("Ana", "Pipe"): identifica quién agregó cada ítem y se guarda en
+// detalles_pedido.notas_especiales, junto con la nota del ítem si la hay.
 const itemSchema = z.object({
-  plato_id: z.number().int(),
+  id_plato: z.number().int(),
   cantidad: z.number().int().positive(),
-  personalizacion: z.record(z.any()).optional(),
+  apodo: z.string().min(1).max(40).optional(),
+  notas: z.string().max(200).optional(),
 });
 
+// id_mesa es opcional en el body porque para un comensal se toma del token y se
+// ignora lo que venga aquí; para el personal (mesero/admin) es obligatorio.
 const crearPedidoSchema = z.object({
-  mesa_id: z.number().int(),
+  id_mesa: z.number().int().optional(),
+  notas_generales: z.string().max(500).optional(),
   items: z.array(itemSchema).min(1),
 });
 
+/**
+ * POST /api/pedidos — lo usan el comensal (desde su sesión de QR), el mesero y
+ * el admin. Si quien pide es un comensal, la mesa sale del token y el id_mesa
+ * del body se ignora: así una mesa no puede ordenar a nombre de otra.
+ */
 async function crear(req, res) {
   const parsed = crearPedidoSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
 
+  const comensal = esComensal(req);
+  const id_mesa = comensal ? req.user.id_mesa : parsed.data.id_mesa;
+  // El pedido pertenece a la mesa; id_usuario solo alimenta la auditoría y va
+  // null cuando lo crea un comensal (no existe en la tabla usuarios).
+  const id_usuario = comensal ? null : req.user.id_usuario;
+
+  if (!id_mesa) {
+    return res.status(400).json({ error: 'id_mesa es obligatorio para el personal' });
+  }
+
   try {
     const pedido = await pedidosService.crearConDetalles({
-      mesa_id: parsed.data.mesa_id,
-      cliente_id: req.user.id,
+      id_mesa,
+      id_usuario,
       items: parsed.data.items,
+      notas_generales: parsed.data.notas_generales,
     });
     // NOTA para Roberto: aquí es donde se debe emitir 'order:created' hacia
     // el socket-server, para que llegue al KDS y al panel admin en vivo.
-    return res.status(201).json({ pedido_id: pedido.id, estado: pedido.estado, total: pedido.total });
+    return res.status(201).json({
+      id_pedido: pedido.id_pedido,
+      codigo_pedido: pedido.codigo_pedido,
+      id_mesa: pedido.id_mesa,
+      estado: pedido.estado,
+      total: pedido.total,
+    });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
     console.error(err);
@@ -46,6 +76,12 @@ async function obtener(req, res) {
   try {
     const pedido = await pedidosService.obtenerConDetalles(req.params.id);
     if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+
+    // Un comensal solo puede ver los pedidos de su propia mesa.
+    if (esComensal(req) && pedido.id_mesa !== req.user.id_mesa) {
+      return res.status(403).json({ error: 'Ese pedido no pertenece a tu mesa' });
+    }
+
     return res.json(pedido);
   } catch (err) {
     console.error(err);
@@ -54,7 +90,7 @@ async function obtener(req, res) {
 }
 
 async function actualizarEstado(req, res) {
-  const { estado, observacion } = req.body;
+  const { estado, observaciones } = req.body;
   if (!pedidosService.ESTADOS_VALIDOS.includes(estado)) {
     return res.status(400).json({
       error: `Estado inválido. Usa uno de: ${pedidosService.ESTADOS_VALIDOS.join(', ')}`,
@@ -62,7 +98,12 @@ async function actualizarEstado(req, res) {
   }
 
   try {
-    const pedido = await pedidosService.actualizarEstado(req.params.id, estado, observacion);
+    const pedido = await pedidosService.actualizarEstado(
+      req.params.id,
+      estado,
+      observaciones,
+      esComensal(req) ? null : req.user.id_usuario
+    );
     if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
     // NOTA para Roberto: aquí se dispara 'order:status' hacia cliente y KDS.
     return res.json(pedido);
@@ -77,14 +118,19 @@ async function cancelar(req, res) {
   return actualizarEstado(req, res);
 }
 
-async function historialCliente(req, res) {
+/**
+ * GET /api/pedidos/mesa — pedidos de la mesa de la sesión del comensal.
+ * Reemplaza al viejo /pedidos/historial: el modelo ER no relaciona pedidos con
+ * usuarios, así que no hay historial "por cliente", solo por mesa.
+ */
+async function listarPorMesa(req, res) {
   try {
-    const pedidos = await pedidosService.historialPorCliente(req.user.id);
-    return res.json({ pedidos });
+    const pedidos = await pedidosService.listarPorMesa(req.user.id_mesa);
+    return res.json({ id_mesa: req.user.id_mesa, pedidos });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Error al obtener historial de pedidos' });
+    return res.status(500).json({ error: 'Error al obtener los pedidos de la mesa' });
   }
 }
 
-module.exports = { crear, listarActivos, obtener, actualizarEstado, cancelar, historialCliente };
+module.exports = { crear, listarActivos, obtener, actualizarEstado, cancelar, listarPorMesa };
