@@ -2,15 +2,17 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { z } = require('zod');
 const usuariosService = require('../services/usuarios.service');
+const { ROLES_STAFF } = require('../middleware/auth.middleware');
 
-// Roles del sistema, según el plan de trabajo: cliente (comensal) y personal
-// del restaurante (mesero, cajero, admin).
+// Solo se registran usuarios del personal: admin, mesero, cajero, cocina.
+// El comensal NO se registra — obtiene su sesión escaneando el QR de la mesa
+// (POST /api/mesas/qr/:token/sesion) y su rol solo existe dentro del JWT.
+// La tabla usuarios no tiene telefono (ver docs/modelo-er.md).
 const registerSchema = z.object({
   nombre: z.string().min(2),
   email: z.string().email(),
   password: z.string().min(6),
-  telefono: z.string().optional(),
-  rol: z.enum(['cliente', 'mesero', 'cajero', 'admin']).default('cliente'),
+  rol: z.enum(ROLES_STAFF),
 });
 
 const loginSchema = z.object({
@@ -18,18 +20,24 @@ const loginSchema = z.object({
   password: z.string().min(6),
 });
 
-function firmarToken(usuario) {
-  return jwt.sign({ id: usuario.id, rol: usuario.rol }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN,
-  });
+function firmarTokenStaff(usuario) {
+  return jwt.sign(
+    { id_usuario: usuario.id_usuario, rol: usuario.rol },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
+  );
 }
 
+/**
+ * POST /api/auth/register — solo un admin autenticado puede crear usuarios
+ * (la restricción de rol se aplica en las rutas, ver auth.routes.js).
+ */
 async function register(req, res) {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.errors[0].message });
   }
-  const { nombre, email, password, telefono, rol } = parsed.data;
+  const { nombre, email, password, rol } = parsed.data;
 
   try {
     const existente = await usuariosService.buscarPorEmail(email);
@@ -38,9 +46,9 @@ async function register(req, res) {
     }
 
     const password_hash = await bcrypt.hash(password, 10);
-    const usuario = await usuariosService.crear({ nombre, email, password_hash, rol, telefono });
+    const usuario = await usuariosService.crear({ nombre, email, password_hash, rol });
 
-    return res.status(201).json({ usuario, token: firmarToken(usuario) });
+    return res.status(201).json({ usuario });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Error al registrar usuario' });
@@ -60,14 +68,23 @@ async function login(req, res) {
       return res.status(401).json({ error: 'Credenciales inválidas' });
     }
 
+    if (!usuario.activo) {
+      return res.status(403).json({ error: 'Usuario inactivo' });
+    }
+
     const passwordOk = await bcrypt.compare(password, usuario.password_hash);
     if (!passwordOk) {
       return res.status(401).json({ error: 'Credenciales inválidas' });
     }
 
     return res.json({
-      usuario: { id: usuario.id, nombre: usuario.nombre, email: usuario.email, rol: usuario.rol },
-      token: firmarToken(usuario),
+      usuario: {
+        id_usuario: usuario.id_usuario,
+        nombre: usuario.nombre,
+        email: usuario.email,
+        rol: usuario.rol,
+      },
+      token: firmarTokenStaff(usuario),
     });
   } catch (err) {
     console.error(err);
