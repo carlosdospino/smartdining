@@ -24,7 +24,12 @@ async function cambiarEstado(req, res) {
   }
 
   try {
-    const pedido = await kdsService.cambiarEstado(req.params.id, estado, 'Actualizado desde KDS');
+    const pedido = await kdsService.cambiarEstado(
+      req.params.id,
+      estado,
+      'Actualizado desde KDS',
+      req.user.id_usuario
+    );
     if (!pedido) return res.status(404).json({ error: 'Comanda no encontrada' });
     // NOTA para Roberto: aquí se dispara 'order:status' (o 'order:item_ready')
     // hacia el cliente y el panel admin.
