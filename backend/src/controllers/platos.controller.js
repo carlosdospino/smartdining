@@ -1,19 +1,21 @@
 const { z } = require('zod');
 const platosService = require('../services/platos.service');
 
+// Columnas segun docs/modelo-er.md: url_imagen (no "imagen_url"), id_categoria
+// y tiempo_preparacion_estimado. El modelo no tiene personalizaciones.
 const platoSchema = z.object({
   nombre: z.string().min(1),
   descripcion: z.string().optional(),
   precio: z.number().positive(),
-  imagen_url: z.string().url().optional(),
-  categoria_id: z.number().int(),
+  url_imagen: z.string().url().optional(),
+  id_categoria: z.number().int(),
   disponible: z.boolean().optional(),
-  personalizaciones: z.array(z.record(z.any())).optional(),
+  tiempo_preparacion_estimado: z.number().int().positive().optional(),
 });
 
 async function listar(req, res) {
   try {
-    const platos = await platosService.listar(req.query.categoria_id);
+    const platos = await platosService.listar(req.query.id_categoria);
     return res.json({ platos });
   } catch (err) {
     console.error(err);

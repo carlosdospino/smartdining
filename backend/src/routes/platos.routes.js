@@ -4,7 +4,7 @@ const { requireAuth, requireRole } = require('../middleware/auth.middleware');
 
 const router = express.Router();
 
-router.get('/', ctrl.listar); // soporta ?categoria_id=
+router.get('/', ctrl.listar); // soporta ?id_categoria=
 router.get('/:id', ctrl.obtener);
 
 router.post('/', requireAuth, requireRole('admin'), ctrl.crear);

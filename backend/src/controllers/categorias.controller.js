@@ -1,10 +1,12 @@
 const { z } = require('zod');
 const categoriasService = require('../services/categorias.service');
 
+// Columnas segun docs/modelo-er.md: orden_visualizacion (no "orden") y activo.
 const categoriaSchema = z.object({
   nombre: z.string().min(1),
   descripcion: z.string().optional(),
-  orden: z.number().int().optional(),
+  orden_visualizacion: z.number().int().optional(),
+  activo: z.boolean().optional(),
 });
 
 async function listar(req, res) {
