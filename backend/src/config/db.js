@@ -1,8 +1,8 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Pool de conexiones a PostgreSQL. Los nombres de tabla/campo coinciden
-// con database/schema.sql (9 tablas, DDL de Jarrison).
+// Pool de conexiones a PostgreSQL. Los nombres de tabla/columna de todas las
+// queries siguen docs/modelo-er.md (modelo ER oficial de Jarrison, 9 tablas).
 const pool = new Pool({
   host: process.env.PGHOST,
   port: process.env.PGPORT,

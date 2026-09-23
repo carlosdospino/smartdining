@@ -1,11 +1,17 @@
 const { z } = require('zod');
 const transaccionesService = require('../services/transacciones.service');
 
+// Columnas segun docs/modelo-er.md: metodo_pago, estado_transaccion y
+// referencia_externa (la referencia de la pasarela de pago de Roberto).
+// Los metodos son los de database/README.md de Jarrison.
+const METODOS_PAGO = ['efectivo', 'tarjeta', 'transferencia'];
+
 const pagoSchema = z.object({
-  pedido_id: z.number().int(),
+  id_pedido: z.number().int(),
   monto: z.number().positive(),
-  id_transaccion_proveedor: z.string().optional(), // referencia de la pasarela de pago (módulo de Roberto)
-  estado: z.enum(['aprobada', 'rechazada', 'pendiente']).optional(),
+  metodo_pago: z.enum(METODOS_PAGO),
+  referencia_externa: z.string().optional(),
+  estado_transaccion: z.enum(['aprobada', 'rechazada', 'pendiente']).optional(),
 });
 
 async function crear(req, res) {
@@ -13,7 +19,10 @@ async function crear(req, res) {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
 
   try {
-    const transaccion = await transaccionesService.registrarPago(parsed.data);
+    const transaccion = await transaccionesService.registrarPago({
+      ...parsed.data,
+      id_usuario: req.user.id_usuario,
+    });
     return res.status(201).json(transaccion);
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
@@ -24,7 +33,7 @@ async function crear(req, res) {
 
 async function obtenerPorPedido(req, res) {
   try {
-    const transacciones = await transaccionesService.obtenerPorPedido(req.params.pedido_id);
+    const transacciones = await transaccionesService.obtenerPorPedido(req.params.id_pedido);
     return res.json({ transacciones });
   } catch (err) {
     console.error(err);
@@ -32,4 +41,4 @@ async function obtenerPorPedido(req, res) {
   }
 }
 
-module.exports = { crear, obtenerPorPedido };
+module.exports = { crear, obtenerPorPedido, METODOS_PAGO };
