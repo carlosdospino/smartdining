@@ -61,7 +61,7 @@ Para evitar conflictos y coordinar de forma ordenada:
 
 - [x] **Paso 1:** Creación del repositorio y estructura base de carpetas.
 - [ ] **Paso 2:** Creación y subida del script SQL de PostgreSQL con las 9 tablas en `/database`.
-- [ ] **Paso 3:** Definición del contrato de API REST (endpoints y esquemas JSON) en `/backend`.
+- [x] **Paso 3:** Definición del contrato de API REST (endpoints y esquemas JSON) en `/backend` → [backend/docs/api-spec.md](backend/docs/api-spec.md), alineado con el modelo ER de Jarrison ([backend/docs/modelo-er.md](backend/docs/modelo-er.md)).
 - [ ] **Paso 4:** Definición de eventos WebSocket y formato de token QR en `/socket-server`.
 - [ ] **Paso 5:** Inicialización de proyectos base ("Hello World") en cada módulo.
 - [ ] **Paso 6:** Integración con datos simulados (mocks) en frontend.
