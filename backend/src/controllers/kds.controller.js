@@ -5,17 +5,16 @@ const kdsService = require('../services/kds.service');
 // desde otros módulos, no desde la pantalla táctil de cocina.
 const ESTADOS_PERMITIDOS_KDS = ['en_preparacion', 'listo'];
 
-async function comandasActivas(req, res) {
+async function comandasActivas(req, res, next) {
   try {
     const comandas = await kdsService.comandasActivas();
     return res.json({ comandas });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al obtener las comandas activas' });
+    return next(err);
   }
 }
 
-async function cambiarEstado(req, res) {
+async function cambiarEstado(req, res, next) {
   const { estado } = req.body;
   if (!ESTADOS_PERMITIDOS_KDS.includes(estado)) {
     return res.status(400).json({
@@ -35,8 +34,7 @@ async function cambiarEstado(req, res) {
     // hacia el cliente y el panel admin.
     return res.json(pedido);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al actualizar el estado de la comanda' });
+    return next(err);
   }
 }
 

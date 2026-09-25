@@ -25,7 +25,7 @@ const crearPedidoSchema = z.object({
  * el admin. Si quien pide es un comensal, la mesa sale del token y el id_mesa
  * del body se ignora: así una mesa no puede ordenar a nombre de otra.
  */
-async function crear(req, res) {
+async function crear(req, res, next) {
   const parsed = crearPedidoSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
 
@@ -56,23 +56,20 @@ async function crear(req, res) {
       total: pedido.total,
     });
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ error: err.message });
-    console.error(err);
-    return res.status(500).json({ error: 'Error al crear el pedido' });
+    return next(err);
   }
 }
 
-async function listarActivos(req, res) {
+async function listarActivos(req, res, next) {
   try {
     const pedidos = await pedidosService.listarActivos();
     return res.json({ pedidos });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al listar pedidos activos' });
+    return next(err);
   }
 }
 
-async function obtener(req, res) {
+async function obtener(req, res, next) {
   try {
     const pedido = await pedidosService.obtenerConDetalles(req.params.id);
     if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
@@ -84,12 +81,11 @@ async function obtener(req, res) {
 
     return res.json(pedido);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al obtener el pedido' });
+    return next(err);
   }
 }
 
-async function actualizarEstado(req, res) {
+async function actualizarEstado(req, res, next) {
   const { estado, observaciones } = req.body;
   if (!pedidosService.ESTADOS_VALIDOS.includes(estado)) {
     return res.status(400).json({
@@ -108,12 +104,11 @@ async function actualizarEstado(req, res) {
     // NOTA para Roberto: aquí se dispara 'order:status' hacia cliente y KDS.
     return res.json(pedido);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al actualizar el estado del pedido' });
+    return next(err);
   }
 }
 
-async function cancelar(req, res) {
+async function cancelar(req, res, next) {
   req.body.estado = 'cancelado';
   return actualizarEstado(req, res);
 }
@@ -123,13 +118,12 @@ async function cancelar(req, res) {
  * Reemplaza al viejo /pedidos/historial: el modelo ER no relaciona pedidos con
  * usuarios, así que no hay historial "por cliente", solo por mesa.
  */
-async function listarPorMesa(req, res) {
+async function listarPorMesa(req, res, next) {
   try {
     const pedidos = await pedidosService.listarPorMesa(req.user.id_mesa);
     return res.json({ id_mesa: req.user.id_mesa, pedidos });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al obtener los pedidos de la mesa' });
+    return next(err);
   }
 }
 

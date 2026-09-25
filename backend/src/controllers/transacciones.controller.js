@@ -14,7 +14,7 @@ const pagoSchema = z.object({
   estado_transaccion: z.enum(['aprobada', 'rechazada', 'pendiente']).optional(),
 });
 
-async function crear(req, res) {
+async function crear(req, res, next) {
   const parsed = pagoSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
 
@@ -25,19 +25,16 @@ async function crear(req, res) {
     });
     return res.status(201).json(transaccion);
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ error: err.message });
-    console.error(err);
-    return res.status(500).json({ error: 'Error al registrar el pago' });
+    return next(err);
   }
 }
 
-async function obtenerPorPedido(req, res) {
+async function obtenerPorPedido(req, res, next) {
   try {
     const transacciones = await transaccionesService.obtenerPorPedido(req.params.id_pedido);
     return res.json({ transacciones });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al obtener las transacciones' });
+    return next(err);
   }
 }
 

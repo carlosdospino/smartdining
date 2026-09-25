@@ -9,28 +9,26 @@ const categoriaSchema = z.object({
   activo: z.boolean().optional(),
 });
 
-async function listar(req, res) {
+async function listar(req, res, next) {
   try {
     const categorias = await categoriasService.listar();
     return res.json({ categorias });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al listar categorías' });
+    return next(err);
   }
 }
 
-async function obtener(req, res) {
+async function obtener(req, res, next) {
   try {
     const categoria = await categoriasService.obtenerPorId(req.params.id);
     if (!categoria) return res.status(404).json({ error: 'Categoría no encontrada' });
     return res.json(categoria);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al obtener categoría' });
+    return next(err);
   }
 }
 
-async function crear(req, res) {
+async function crear(req, res, next) {
   const parsed = categoriaSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
 
@@ -38,12 +36,11 @@ async function crear(req, res) {
     const categoria = await categoriasService.crear(parsed.data);
     return res.status(201).json(categoria);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al crear categoría' });
+    return next(err);
   }
 }
 
-async function actualizar(req, res) {
+async function actualizar(req, res, next) {
   const parsed = categoriaSchema.partial().safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
 
@@ -54,19 +51,17 @@ async function actualizar(req, res) {
     const categoria = await categoriasService.actualizar(req.params.id, { ...actual, ...parsed.data });
     return res.json(categoria);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al actualizar categoría' });
+    return next(err);
   }
 }
 
-async function eliminar(req, res) {
+async function eliminar(req, res, next) {
   try {
     const eliminada = await categoriasService.eliminar(req.params.id);
     if (!eliminada) return res.status(404).json({ error: 'Categoría no encontrada' });
     return res.status(204).send();
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al eliminar categoría' });
+    return next(err);
   }
 }
 

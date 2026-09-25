@@ -32,7 +32,7 @@ function firmarTokenStaff(usuario) {
  * POST /api/auth/register — solo un admin autenticado puede crear usuarios
  * (la restricción de rol se aplica en las rutas, ver auth.routes.js).
  */
-async function register(req, res) {
+async function register(req, res, next) {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.errors[0].message });
@@ -50,12 +50,11 @@ async function register(req, res) {
 
     return res.status(201).json({ usuario });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al registrar usuario' });
+    return next(err);
   }
 }
 
-async function login(req, res) {
+async function login(req, res, next) {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.errors[0].message });
@@ -87,8 +86,7 @@ async function login(req, res) {
       token: firmarTokenStaff(usuario),
     });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al iniciar sesión' });
+    return next(err);
   }
 }
 

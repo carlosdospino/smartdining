@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const routes = require('./src/routes');
+const { manejadorErrores } = require('./src/middleware/errores.middleware');
 
 const app = express();
 
@@ -14,11 +15,9 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Ruta no encontrada' });
 });
 
-// Manejador de errores centralizado (por si algún controlador olvida un try/catch)
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ error: 'Error interno del servidor' });
-});
+// Manejador de errores centralizado: traduce los RAISE EXCEPTION de los
+// triggers a 409 y cualquier otro error a 500 genérico.
+app.use(manejadorErrores);
 
 const PORT = process.env.PORT || 4000;
 

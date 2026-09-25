@@ -14,24 +14,22 @@ const mesaSchema = z.object({
   token_qr: z.string().optional(),
 });
 
-async function listar(req, res) {
+async function listar(req, res, next) {
   try {
     const mesas = await mesasService.listar();
     return res.json({ mesas });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al listar mesas' });
+    return next(err);
   }
 }
 
-async function obtener(req, res) {
+async function obtener(req, res, next) {
   try {
     const mesa = await mesasService.obtenerPorId(req.params.id);
     if (!mesa) return res.status(404).json({ error: 'Mesa no encontrada' });
     return res.json(mesa);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al obtener mesa' });
+    return next(err);
   }
 }
 
@@ -44,14 +42,13 @@ async function obtener(req, res) {
  * hace aquí (consultando Redis desde el backend) o si el backend confía en que
  * Roberto ya validó el token antes de que la PWA llegue aquí.
  */
-async function obtenerPorToken(req, res) {
+async function obtenerPorToken(req, res, next) {
   try {
     const mesa = await mesasService.obtenerPorToken(req.params.token);
     if (!mesa) return res.status(404).json({ error: 'Token de mesa inválido' });
     return res.json(mesa);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al validar token de mesa' });
+    return next(err);
   }
 }
 
@@ -63,7 +60,7 @@ async function obtenerPorToken(req, res) {
  * existe en la tabla usuarios: la sesión pertenece a la mesa, no a una
  * persona, y es la que autoriza POST /api/pedidos y GET /api/pedidos/mesa.
  */
-async function crearSesionPorToken(req, res) {
+async function crearSesionPorToken(req, res, next) {
   try {
     const mesa = await mesasService.obtenerPorToken(req.params.token);
     if (!mesa) return res.status(404).json({ error: 'Token de mesa inválido' });
@@ -86,12 +83,11 @@ async function crearSesionPorToken(req, res) {
       },
     });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al abrir la sesión de la mesa' });
+    return next(err);
   }
 }
 
-async function crear(req, res) {
+async function crear(req, res, next) {
   const parsed = mesaSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
 
@@ -99,12 +95,11 @@ async function crear(req, res) {
     const mesa = await mesasService.crear(parsed.data);
     return res.status(201).json(mesa);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al crear mesa' });
+    return next(err);
   }
 }
 
-async function actualizarEstado(req, res) {
+async function actualizarEstado(req, res, next) {
   const parsed = mesaSchema.partial().safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
 
@@ -113,19 +108,17 @@ async function actualizarEstado(req, res) {
     if (!mesa) return res.status(404).json({ error: 'Mesa no encontrada' });
     return res.json(mesa);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al actualizar mesa' });
+    return next(err);
   }
 }
 
-async function eliminar(req, res) {
+async function eliminar(req, res, next) {
   try {
     const eliminada = await mesasService.eliminar(req.params.id);
     if (!eliminada) return res.status(404).json({ error: 'Mesa no encontrada' });
     return res.status(204).send();
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al eliminar mesa' });
+    return next(err);
   }
 }
 

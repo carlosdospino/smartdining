@@ -13,28 +13,26 @@ const platoSchema = z.object({
   tiempo_preparacion_estimado: z.number().int().positive().optional(),
 });
 
-async function listar(req, res) {
+async function listar(req, res, next) {
   try {
     const platos = await platosService.listar(req.query.id_categoria);
     return res.json({ platos });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al listar platos' });
+    return next(err);
   }
 }
 
-async function obtener(req, res) {
+async function obtener(req, res, next) {
   try {
     const plato = await platosService.obtenerPorId(req.params.id);
     if (!plato) return res.status(404).json({ error: 'Plato no encontrado' });
     return res.json(plato);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al obtener plato' });
+    return next(err);
   }
 }
 
-async function crear(req, res) {
+async function crear(req, res, next) {
   const parsed = platoSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
 
@@ -42,12 +40,11 @@ async function crear(req, res) {
     const plato = await platosService.crear(parsed.data);
     return res.status(201).json(plato);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al crear plato' });
+    return next(err);
   }
 }
 
-async function actualizar(req, res) {
+async function actualizar(req, res, next) {
   const parsed = platoSchema.partial().safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
 
@@ -58,19 +55,17 @@ async function actualizar(req, res) {
     const plato = await platosService.actualizar(req.params.id, { ...actual, ...parsed.data });
     return res.json(plato);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al actualizar plato' });
+    return next(err);
   }
 }
 
-async function eliminar(req, res) {
+async function eliminar(req, res, next) {
   try {
     const eliminado = await platosService.eliminar(req.params.id);
     if (!eliminado) return res.status(404).json({ error: 'Plato no encontrado' });
     return res.status(204).send();
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Error al eliminar plato' });
+    return next(err);
   }
 }
 
