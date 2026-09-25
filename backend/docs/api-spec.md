@@ -8,6 +8,44 @@ Auth: `Authorization: Bearer <token>`
 Los nombres de tablas y columnas de este contrato siguen **[modelo-er.md](./modelo-er.md)**,
 el modelo entidad-relación oficial de Jarrison (dueño de la base de datos).
 
+## Reparto de responsabilidades (acordado con el equipo)
+
+**La base de datos es la fuente de verdad** y el backend no replica su lógica:
+
+| Responsabilidad | Dónde vive |
+|---|---|
+| Totales y subtotales | Triggers `tr_validar_detalle_pedido` y `tr_actualizar_total_pedido` |
+| Transiciones de estado del pedido | Trigger `tr_validar_transicion_estado` contra la tabla `transiciones_validas` |
+| Disponibilidad del plato | Trigger `tr_validar_disponibilidad_plato` |
+| Precios históricos | Se congelan leyendo `platos.precio` dentro del propio INSERT |
+| Validación de pagos (monto vs total) | Trigger `tr_validar_transaccion_financiera` |
+| Liberar la mesa y rotar su `token_qr` | Trigger `tr_regenerar_token_qr` |
+| Autenticación, roles (RBAC) | **Backend** |
+| Que el body venga bien formado | **Backend** (zod) |
+
+### Errores de la base de datos
+
+Se traducen en un solo lugar (`src/middleware/errores.middleware.js`):
+
+- **409 Conflict** — `RAISE EXCEPTION` de un trigger (SQLSTATE `P0001`). El mensaje
+  del trigger se devuelve tal cual porque está redactado para el usuario final:
+  `{ "error": "Transición de estado no autorizada: de \"recibido\" hacia \"listo\"" }`
+- **400 Bad Request** — el body no cumple el esquema (dominio de un enum, tipos, campos faltantes).
+- **500** genérico — cualquier otro error de PostgreSQL (CHECK `23514`, FK `23503`,
+  unique `23505`). El detalle queda solo en el log del servidor, nunca en la respuesta.
+
+### Transiciones válidas (tabla `transiciones_validas`)
+
+```
+recibido        -> en_preparacion | cancelado
+en_preparacion  -> listo | cancelado
+listo           -> entregado
+entregado       -> pagado
+```
+
+No existe `listo -> cancelado` ni `entregado -> cancelado`, y `pagado` es terminal.
+Cobrar un pedido exige que esté en `entregado`.
+
 ---
 
 ## Roles y sesiones
@@ -28,8 +66,8 @@ Notas del flujo del comensal (definido por Jarrison):
 - En `historial_estados`, `id_usuario` va `null` cuando el cambio lo hizo un comensal.
 
 **Estados de un pedido (flujo estricto):**
-`recibido → en_preparacion → listo → entregado → pagado` (con `cancelado` como salida
-en cualquier punto antes de `pagado`).
+`recibido → en_preparacion → listo → entregado → pagado`. `cancelado` solo se alcanza
+desde `recibido` o `en_preparacion` (ver *Transiciones válidas* arriba).
 
 ---
 
@@ -107,7 +145,7 @@ Body: `{ "email": "ana@mail.com", "password": "123456" }`
 | **POST** | **/mesas/qr/:token/sesion** | **No** | **Abre la sesión del comensal y devuelve su JWT** |
 | GET | /mesas/:id | No | Obtiene una |
 | POST | /mesas | admin | Crea |
-| PATCH | /mesas/:id/estado | admin, cajero, mesero | Cambia estado |
+| PATCH | /mesas/:id/estado | admin, cajero, mesero | Cambia estado (`disponible`, `ocupada`, `reservada`, `mantenimiento`) |
 | DELETE | /mesas/:id | admin | Elimina |
 
 ```json
@@ -170,11 +208,14 @@ Body:
   (400 si falta).
 - `apodo` + `notas` se guardan juntos en `detalles_pedido.notas_especiales`
   (`"Ana: sin cebolla"`).
-- `precio_unitario` se congela desde `platos.precio` en el momento del pedido (regla
-  de negocio "Inmutabilidad de Precios"), nunca se toma del body; `subtotal` se
-  calcula en el backend.
-- `codigo_pedido` lo genera el backend (formato `PED-AAMMDD-XXXXXX`) y es único.
-- Cada ítem nace con `estado_item = 'pendiente'`.
+- `precio_unitario` se congela desde `platos.precio` dentro del propio INSERT (regla
+  de negocio "Inmutabilidad de Precios"), nunca se toma del body.
+- `subtotal` y `total` los calculan los triggers; el backend relee el pedido antes de
+  responder, así que el `total` de la respuesta es el que dejó la base.
+- `codigo_pedido` lo genera el backend (formato `PED-AAMMDD-XXXXX`, 16 caracteres, que
+  es el largo de la columna) y es único.
+- Cada ítem nace con `estado_item = 'pendiente'` (DEFAULT de la columna).
+- 409 si el plato no existe o no está disponible: lo decide el trigger.
 
 201:
 
@@ -195,6 +236,9 @@ Body: `{ "estado": "listo", "observaciones": "Sale de cocina" }`
 
 Cada cambio queda en `historial_estados` con `estado_anterior`, `estado_nuevo`,
 `observaciones`, `fecha_cambio` y el `id_usuario` que lo hizo (`null` si fue un comensal).
+
+400 si el estado no existe; **409 si la transición no está en `transiciones_validas`**,
+con el mensaje del trigger.
 
 > Punto de integración con Roberto: en el código (marcado con un comentario `NOTA`)
 > es donde se debe emitir `order:created` / `order:status` hacia el socket-server.
@@ -248,12 +292,24 @@ Body:
 { "id_pedido": 87, "monto": 56000, "metodo_pago": "tarjeta", "referencia_externa": "ch_123", "estado_transaccion": "aprobada" }
 ```
 
-- `metodo_pago` es obligatorio: `efectivo`, `tarjeta` o `transferencia`.
-- `estado_transaccion`: `aprobada` (por defecto), `rechazada` o `pendiente`.
+- `metodo_pago` es obligatorio, con los valores del CHECK del schema: `efectivo`,
+  `tarjeta_debito`, `tarjeta_credito`, `transferencia`, `online`.
+- `estado_transaccion`: `completada` (por defecto), `pendiente`, `fallida` o `reembolsada`.
 - `referencia_externa` es la referencia de la pasarela de pago que integra Roberto —
   este endpoint solo la guarda.
 
 201: fila insertada en `transacciones`.
+
+**El pedido debe estar en `entregado`**: es la única transición que lleva a `pagado`.
+Cobrar desde otro estado responde 409 con el mensaje del trigger.
+
+409 también si el monto excede el saldo del pedido (`tr_validar_transaccion_financiera`,
+que además deja constancia en `intentos_pago_fallidos`).
+
+Liberar la mesa y rotar su `token_qr` lo hace el trigger `tr_regenerar_token_qr` cuando
+el pedido llega a `pagado` o `cancelado` y la mesa no tiene otros pedidos abiertos: el
+backend **no** toca la tabla `mesas` al cobrar. El QR impreso queda invalidado y el token
+anterior se archiva en `token_qr_historico`.
 
 ---
 

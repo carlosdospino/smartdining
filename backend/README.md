@@ -11,6 +11,59 @@ usan esos nombres: `id_<tabla>` para las PK, `url_imagen`, `token_qr`,
 `orden_visualizacion`, `subtotal`, `estado_item`, `estado_anterior`/`estado_nuevo`,
 `fecha_cambio`, `metodo_pago`, `estado_transaccion`, `referencia_externa`.
 
+## Reparto de responsabilidades con la base de datos
+
+Acordado con el equipo: **la base es la fuente de verdad** y el backend no replica su
+lógica. Ver el detalle en [docs/api-spec.md](docs/api-spec.md).
+
+| La base (triggers de Jarrison) | El backend |
+|---|---|
+| Totales y subtotales | Autenticación y roles (RBAC) |
+| Transiciones de estado (`transiciones_validas`) | Que el body venga bien formado (zod) |
+| Disponibilidad del plato | Congelar el precio leyendo `platos.precio` en el INSERT |
+| Monto del pago vs. total del pedido | Traducir los errores de la base a HTTP |
+| Liberar la mesa y rotar su `token_qr` | Escribir `historial_estados` |
+
+Los `RAISE EXCEPTION` de los triggers (SQLSTATE `P0001`) salen como **409** con el
+mensaje del trigger; cualquier otro error de PostgreSQL sale como **500** genérico sin
+exponer el detalle. Todo eso se decide en un único lugar:
+`src/middleware/errores.middleware.js`.
+
+## Recrear la base de datos local
+
+El `database/README.md` de Jarrison no documenta el orden de ejecución; sale de las
+dependencias entre scripts (`01_tablas_complementarias.sql` hace `ALTER TABLE mesas` y
+`11_seed_data.sql` deriva `token_qr_historico` de las filas de `mesas`). El orden es:
+
+```bash
+# 1. Traer la version mas reciente de la rama de Jarrison, sin mezclarla:
+#    (se extrae a una carpeta aparte; no se commitea en feature/backend)
+git fetch origin
+git archive origin/feature/base-datos database/ | tar -x -C /ruta/temporal
+
+cd /ruta/temporal/database
+export PGPASSWORD=...            # el de backend/.env
+
+# 2. Recrear la base vacia
+psql -h localhost -U postgres -d postgres -c "DROP DATABASE IF EXISTS smartdining;"
+psql -h localhost -U postgres -d postgres -c "CREATE DATABASE smartdining ENCODING 'UTF8';"
+
+# 3. Los tres pasos, en este orden
+psql -h localhost -U postgres -d smartdining -v ON_ERROR_STOP=1 -f schema.sql
+psql -h localhost -U postgres -d smartdining -v ON_ERROR_STOP=1 -f seed.sql
+cd scripts
+psql -h localhost -U postgres -d smartdining -v ON_ERROR_STOP=1 -f 00_ejecutar_todo.sql
+#   OJO: el runner usa "\i" con rutas relativas, hay que ejecutarlo desde scripts/
+
+# 4. Si el hash del seed no corresponde a Admin123!, fijarlo (ver nota abajo):
+cd -   # volver a backend/
+psql -h localhost -U postgres -d smartdining -f scripts/fijar-password-demo.sql
+```
+
+Usuarios demo tras el paso 4 (todos con `Admin123!`): `admin@smartdining.com`,
+`cocina@smartdining.com`, `mesero@smartdining.com`, `caja@smartdining.com`.
+Token QR de la mesa 1 recién sembrada: `qr-token-mesa-01-a1b2c3d4`.
+
 ## Requisitos previos
 
 - Node.js 18+
@@ -70,7 +123,7 @@ escanea el QR
 npm test
 ```
 
-22 pruebas con `node --test` + `supertest`. No hacen falta PostgreSQL ni Redis:
+28 pruebas con `node --test` + `supertest`. No hacen falta PostgreSQL ni Redis:
 `tests/helpers/fake-db.js` reemplaza `pool.query`/`pool.connect` por dobles en memoria
 y registra las queries ejecutadas, así que las pruebas también verifican con qué
 valores llega cada `INSERT`.
@@ -103,7 +156,9 @@ valores llega cada `INSERT`.
 - [x] KDS: comandas activas clasificadas por categoría, restringido a rol `cocina` (o `admin`)
 - [x] Transacciones: registrar pago con liberación atómica de la mesa
 - [x] Todas las queries alineadas con `docs/modelo-er.md`
-- [ ] Probar contra el `schema.sql` real de Jarrison (falta confirmar los valores de `mesas.estado` y `detalles_pedido.estado_item`)
+- [x] Probado contra el `schema.sql` real de Jarrison: login, catálogo, sesión de comensal, pedido, ciclo completo de estados y cobro
+- [x] Totales, subtotales, transiciones y disponibilidad delegados a los triggers
+- [x] Errores de la base traducidos en un solo lugar (409 para `P0001`, 500 genérico para el resto)
 - [ ] Cache de sesiones con Redis (conexión lista, falta integrarla en el middleware de auth)
 - [ ] Validar el TTL del token QR contra Redis, o confirmar que Roberto ya lo validó
 - [ ] Disparar los eventos de WebSocket hacia socket-server en los puntos ya marcados con `NOTA` en el código (coordinar con Roberto)
