@@ -176,3 +176,53 @@ for (const estado of ['fallida', 'pendiente', 'reembolsada']) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// Regresión: POST /pedidos/:id/cancelar delega en actualizarEstado. Si no le
+// pasa `next`, el 409 del trigger se convierte en "next is not a function" y
+// tumba el proceso en vez de responder.
+// ---------------------------------------------------------------------------
+
+test('cancelar un pedido en listo responde 409 y no tumba el proceso', async () => {
+  const mensaje = 'Transición de estado no autorizada: de "listo" hacia "cancelado"';
+  const db = instalarFakeDb((sql) => {
+    if (sql.includes('SELECT estado FROM pedidos')) return { rows: [{ estado: 'listo' }] };
+    if (sql.includes('UPDATE pedidos SET estado')) {
+      const err = new Error(mensaje);
+      err.code = 'P0001';
+      throw err;
+    }
+    return { rows: [] };
+  });
+  try {
+    const res = await request(app)
+      .post('/api/pedidos/13/cancelar')
+      .set('Authorization', `Bearer ${tokenStaff(1, 'admin')}`);
+
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.error, mensaje);
+  } finally {
+    db.restaurar();
+  }
+});
+
+test('cancelar sin body funciona: el atajo fija estado = cancelado', async () => {
+  const db = instalarFakeDb((sql) => {
+    if (sql.includes('SELECT estado FROM pedidos')) return { rows: [{ estado: 'recibido' }] };
+    if (sql.includes('UPDATE pedidos SET estado')) {
+      return { rows: [{ id_pedido: 13, estado: 'cancelado' }] };
+    }
+    return { rows: [] };
+  });
+  try {
+    const res = await request(app)
+      .post('/api/pedidos/13/cancelar')
+      .set('Authorization', `Bearer ${tokenStaff(1, 'admin')}`);
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.estado, 'cancelado');
+    assert.strictEqual(db.buscar('UPDATE pedidos SET estado').params[0], 'cancelado');
+  } finally {
+    db.restaurar();
+  }
+});

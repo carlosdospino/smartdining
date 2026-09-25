@@ -117,9 +117,15 @@ async function actualizarEstado(req, res, next) {
   }
 }
 
+/**
+ * Atajo de PATCH /:id/estado con estado = 'cancelado'. Cancelar solo es legal
+ * desde 'recibido' o 'en_preparacion' (transiciones_validas); desde 'listo' o
+ * 'entregado' el trigger responde 409, así que hay que propagar next para que
+ * ese error llegue al manejador central.
+ */
 async function cancelar(req, res, next) {
-  req.body.estado = 'cancelado';
-  return actualizarEstado(req, res);
+  req.body = { ...req.body, estado: 'cancelado' };
+  return actualizarEstado(req, res, next);
 }
 
 /**
