@@ -1,13 +1,18 @@
 const pool = require('../config/db');
-const mesasService = require('./mesas.service');
 
 // Tabla transacciones (docs/modelo-er.md): id_transaccion, id_pedido,
 // metodo_pago, monto, estado_transaccion, referencia_externa, creado_en.
 
 /**
- * Registra el pago de un pedido y, en la misma transacción de base de datos,
- * marca el pedido como 'pagado' y libera la mesa (regla de negocio:
- * "Liberación atómica de mesa").
+ * Registra el pago de un pedido y marca el pedido como 'pagado'.
+ *
+ * La base es la fuente de verdad y aquí no se replica su lógica:
+ * - Que el monto no exceda el total del pedido lo valida el trigger
+ *   tr_validar_transaccion_financiera (409 con su mensaje).
+ * - Que el pedido pueda pasar a 'pagado' lo valida tr_validar_transicion_estado
+ *   contra transiciones_validas (solo es legal desde 'entregado').
+ * - Liberar la mesa y rotar su token_qr lo hace el trigger tr_regenerar_token_qr
+ *   al ver el pedido en 'pagado': por eso aquí ya NO se toca la tabla mesas.
  *
  * id_usuario es el cajero/admin que cobra, y queda en historial_estados.
  */
@@ -33,22 +38,15 @@ async function registrarPago({
       `INSERT INTO transacciones
         (id_pedido, metodo_pago, monto, estado_transaccion, referencia_externa, creado_en)
        VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING *`,
-      [id_pedido, metodo_pago, monto, estado_transaccion || 'aprobada', referencia_externa || null]
+      [id_pedido, metodo_pago, monto, estado_transaccion || 'completada', referencia_externa || null]
     );
 
-    await client.query(
-      `UPDATE pedidos SET estado = 'pagado', actualizado_en = NOW() WHERE id_pedido = $1`,
-      [id_pedido]
-    );
+    await client.query(`UPDATE pedidos SET estado = 'pagado' WHERE id_pedido = $1`, [id_pedido]);
     await client.query(
       `INSERT INTO historial_estados
         (id_pedido, id_usuario, estado_anterior, estado_nuevo, observaciones, fecha_cambio)
        VALUES ($1, $2, $3, 'pagado', 'Pago registrado', NOW())`,
       [id_pedido, id_usuario, pedido.estado]
-    );
-    await client.query(
-      `UPDATE mesas SET estado = $1, actualizado_en = NOW() WHERE id_mesa = $2`,
-      [mesasService.ESTADO_MESA_LIBRE, pedido.id_mesa]
     );
 
     await client.query('COMMIT');

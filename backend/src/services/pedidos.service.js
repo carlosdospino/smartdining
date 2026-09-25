@@ -1,21 +1,23 @@
 const crypto = require('crypto');
 const pool = require('../config/db');
 
+/**
+ * Dominio del CHECK de pedidos.estado. Se usa solo para validar que el body
+ * traiga un estado existente (trabajo del backend); QUE transiciones son
+ * legales lo decide el trigger tr_validar_transicion_estado contra la tabla
+ * transiciones_validas, no este archivo.
+ */
 const ESTADOS_VALIDOS = ['recibido', 'en_preparacion', 'listo', 'entregado', 'pagado', 'cancelado'];
-
-// PENDIENTE DE CONFIRMAR CON JARRISON: el modelo ER declara estado_item como
-// varchar sin enumerar valores; se arranca en 'pendiente'.
-const ESTADO_ITEM_INICIAL = 'pendiente';
 
 const MAX_INTENTOS_CODIGO = 5;
 
 /**
- * codigo_pedido es UK en la tabla pedidos: es el código corto que ve el
- * comensal ("PED-260922-K3F9AQ") y con el que la mesa referencia su orden.
+ * codigo_pedido es VARCHAR(16) UNIQUE en el schema de Jarrison:
+ * 'PED-' (4) + AAMMDD (6) + '-' (1) + 5 hex = 16 caracteres exactos.
  */
 function generarCodigoPedido(fecha = new Date()) {
   const dia = fecha.toISOString().slice(2, 10).replace(/-/g, '');
-  const aleatorio = crypto.randomBytes(4).toString('hex').toUpperCase().slice(0, 6);
+  const aleatorio = crypto.randomBytes(3).toString('hex').toUpperCase().slice(0, 5);
   return `PED-${dia}-${aleatorio}`;
 }
 
@@ -33,44 +35,22 @@ function componerNotasEspeciales(apodo, notas) {
 /**
  * Crea un pedido y sus detalles en una sola transacción.
  *
- * El pedido pertenece a la mesa, no a un usuario: el modelo ER no relaciona
- * pedidos con usuarios. `id_usuario` es solo quien hizo el cambio para la
- * auditoría en historial_estados, y va null cuando el pedido lo crea un
- * comensal desde su sesión de QR.
+ * La base de datos es la fuente de verdad y aquí NO se replica su lógica:
+ * - precio_unitario se congela leyendo platos.precio en el propio INSERT, así el
+ *   precio histórico lo fija la base y nunca el body.
+ * - subtotal lo calcula el trigger tr_validar_detalle_pedido.
+ * - pedidos.total lo recalcula el trigger tr_actualizar_total_pedido, por eso el
+ *   pedido se vuelve a leer al final en vez de sumar nada en JavaScript.
+ * - que el plato exista y esté disponible lo valida tr_validar_disponibilidad_plato
+ *   (responde 409 con su mensaje vía el manejador central de errores).
  *
- * El precio_unitario se congela desde el plato en el momento del pedido
- * (regla de negocio: "Inmutabilidad de Precios"), nunca se toma del body.
+ * El pedido pertenece a la mesa: id_usuario solo alimenta la auditoría de
+ * historial_estados y va null cuando lo crea un comensal.
  */
 async function crearConDetalles({ id_mesa, id_usuario = null, items, notas_generales = null }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-
-    let total = 0;
-    const detalles = [];
-
-    for (const item of items) {
-      const platoResult = await client.query(
-        'SELECT precio, disponible FROM platos WHERE id_plato = $1',
-        [item.id_plato]
-      );
-      if (platoResult.rows.length === 0) {
-        throw { status: 400, message: `Plato ${item.id_plato} no existe` };
-      }
-      const plato = platoResult.rows[0];
-      if (!plato.disponible) {
-        throw { status: 400, message: `Plato ${item.id_plato} no está disponible` };
-      }
-      const subtotal = Number(plato.precio) * item.cantidad;
-      total += subtotal;
-      detalles.push({
-        id_plato: item.id_plato,
-        cantidad: item.cantidad,
-        precio_unitario: plato.precio,
-        subtotal,
-        notas_especiales: componerNotasEspeciales(item.apodo, item.notas),
-      });
-    }
 
     // codigo_pedido es único: si choca con uno existente se reintenta con otro
     // sin abortar la transacción completa.
@@ -79,10 +59,9 @@ async function crearConDetalles({ id_mesa, id_usuario = null, items, notas_gener
       await client.query('SAVEPOINT intento_codigo');
       try {
         const pedidoResult = await client.query(
-          `INSERT INTO pedidos
-            (id_mesa, codigo_pedido, estado, total, notas_generales, creado_en, actualizado_en)
-           VALUES ($1, $2, 'recibido', $3, $4, NOW(), NOW()) RETURNING *`,
-          [id_mesa, generarCodigoPedido(), total, notas_generales]
+          `INSERT INTO pedidos (id_mesa, codigo_pedido, notas_generales)
+           VALUES ($1, $2, $3) RETURNING *`,
+          [id_mesa, generarCodigoPedido(), notas_generales]
         );
         pedido = pedidoResult.rows[0];
       } catch (err) {
@@ -94,33 +73,34 @@ async function crearConDetalles({ id_mesa, id_usuario = null, items, notas_gener
       throw { status: 500, message: 'No se pudo generar un codigo_pedido único' };
     }
 
-    for (const d of detalles) {
+    for (const item of items) {
       await client.query(
         `INSERT INTO detalles_pedido
-          (id_pedido, id_plato, cantidad, precio_unitario, subtotal, notas_especiales,
-           estado_item, creado_en)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+          (id_pedido, id_plato, cantidad, precio_unitario, notas_especiales)
+         VALUES ($1, $2, $3, (SELECT precio FROM platos WHERE id_plato = $2), $4)`,
         [
           pedido.id_pedido,
-          d.id_plato,
-          d.cantidad,
-          d.precio_unitario,
-          d.subtotal,
-          d.notas_especiales,
-          ESTADO_ITEM_INICIAL,
+          item.id_plato,
+          item.cantidad,
+          componerNotasEspeciales(item.apodo, item.notas),
         ]
       );
     }
 
     await client.query(
       `INSERT INTO historial_estados
-        (id_pedido, id_usuario, estado_anterior, estado_nuevo, observaciones, fecha_cambio)
-       VALUES ($1, $2, NULL, 'recibido', 'Pedido creado', NOW())`,
+        (id_pedido, id_usuario, estado_anterior, estado_nuevo, observaciones)
+       VALUES ($1, $2, NULL, 'recibido', 'Pedido creado')`,
       [pedido.id_pedido, id_usuario]
     );
 
+    // El total y los subtotales los dejaron los triggers: se releen, no se calculan.
+    const conTotal = await client.query('SELECT * FROM pedidos WHERE id_pedido = $1', [
+      pedido.id_pedido,
+    ]);
+
     await client.query('COMMIT');
-    return pedido;
+    return conTotal.rows[0];
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -151,8 +131,12 @@ async function obtenerConDetalles(id) {
 }
 
 /**
- * Cambia el estado del pedido y lo registra en historial_estados con el estado
- * anterior y el nuevo. id_usuario va null si el cambio lo hizo un comensal.
+ * Cambia el estado del pedido y lo registra en historial_estados.
+ *
+ * No valida la transición: si no está en transiciones_validas, el trigger
+ * tr_validar_transicion_estado aborta el UPDATE con un RAISE EXCEPTION y el
+ * manejador central lo devuelve como 409. actualizado_en también lo pone ese
+ * trigger. id_usuario va null si el cambio lo hizo un comensal.
  */
 async function actualizarEstado(id, estado, observaciones, id_usuario = null) {
   const client = await pool.connect();
@@ -167,14 +151,14 @@ async function actualizarEstado(id, estado, observaciones, id_usuario = null) {
     const estadoAnterior = actual.rows[0].estado;
 
     const result = await client.query(
-      'UPDATE pedidos SET estado = $1, actualizado_en = NOW() WHERE id_pedido = $2 RETURNING *',
+      'UPDATE pedidos SET estado = $1 WHERE id_pedido = $2 RETURNING *',
       [estado, id]
     );
 
     await client.query(
       `INSERT INTO historial_estados
-        (id_pedido, id_usuario, estado_anterior, estado_nuevo, observaciones, fecha_cambio)
-       VALUES ($1, $2, $3, $4, $5, NOW())`,
+        (id_pedido, id_usuario, estado_anterior, estado_nuevo, observaciones)
+       VALUES ($1, $2, $3, $4, $5)`,
       [id, id_usuario, estadoAnterior, estado, observaciones || null]
     );
 
@@ -199,7 +183,6 @@ async function listarPorMesa(idMesa) {
 
 module.exports = {
   ESTADOS_VALIDOS,
-  ESTADO_ITEM_INICIAL,
   generarCodigoPedido,
   componerNotasEspeciales,
   crearConDetalles,

@@ -1,17 +1,17 @@
 const { z } = require('zod');
 const transaccionesService = require('../services/transacciones.service');
 
-// Columnas segun docs/modelo-er.md: metodo_pago, estado_transaccion y
-// referencia_externa (la referencia de la pasarela de pago de Roberto).
-// Los metodos son los de database/README.md de Jarrison.
-const METODOS_PAGO = ['efectivo', 'tarjeta', 'transferencia'];
+// Valores exactos de los CHECK de la tabla transacciones en el schema.sql de
+// Jarrison. referencia_externa es la referencia de la pasarela de Roberto.
+const METODOS_PAGO = ['efectivo', 'tarjeta_debito', 'tarjeta_credito', 'transferencia', 'online'];
+const ESTADOS_TRANSACCION = ['pendiente', 'completada', 'fallida', 'reembolsada'];
 
 const pagoSchema = z.object({
   id_pedido: z.number().int(),
   monto: z.number().positive(),
   metodo_pago: z.enum(METODOS_PAGO),
   referencia_externa: z.string().optional(),
-  estado_transaccion: z.enum(['aprobada', 'rechazada', 'pendiente']).optional(),
+  estado_transaccion: z.enum(ESTADOS_TRANSACCION).optional(),
 });
 
 async function crear(req, res, next) {
@@ -38,4 +38,4 @@ async function obtenerPorPedido(req, res, next) {
   }
 }
 
-module.exports = { crear, obtenerPorPedido, METODOS_PAGO };
+module.exports = { crear, obtenerPorPedido, METODOS_PAGO, ESTADOS_TRANSACCION };

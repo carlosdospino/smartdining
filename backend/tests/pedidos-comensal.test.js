@@ -4,14 +4,14 @@ const request = require('supertest');
 const { instalarFakeDb, tokenComensal, tokenStaff } = require('./helpers/fake-db');
 const app = require('../server');
 
-const PLATO = { precio: '28000', disponible: true };
-
 // Responde lo mínimo que necesita crearConDetalles para llegar al COMMIT.
+// El subtotal y el total ya no los calcula el backend: los ponen los triggers,
+// así que el pedido se relee y es esa relectura la que trae el total.
+const PEDIDO = { id_pedido: 87, id_mesa: 5, codigo_pedido: 'PED-260925-ABC12', estado: 'recibido' };
+
 function responderCreacionOk(sql) {
-  if (sql.includes('FROM platos')) return { rows: [PLATO] };
-  if (sql.includes('INSERT INTO pedidos')) {
-    return { rows: [{ id_pedido: 87, id_mesa: 5, codigo_pedido: 'PED-260922-ABC123', estado: 'recibido', total: '56000' }] };
-  }
+  if (sql.includes('INSERT INTO pedidos')) return { rows: [{ ...PEDIDO, total: '0.00' }] };
+  if (sql.includes('SELECT * FROM pedidos')) return { rows: [{ ...PEDIDO, total: '56000.00' }] };
   return { rows: [] };
 }
 
@@ -48,13 +48,19 @@ test('el apodo del comensal se guarda en detalles_pedido.notas_especiales', asyn
 
     assert.strictEqual(res.status, 201);
     assert.ok(res.body.codigo_pedido, 'el pedido trae un codigo_pedido');
+    assert.strictEqual(res.body.total, '56000.00', 'el total viene de la relectura, no de JS');
 
     const detalle = db.buscar('INSERT INTO detalles_pedido');
     assert.ok(detalle);
-    // (id_pedido, id_plato, cantidad, precio_unitario, subtotal, notas_especiales, estado_item)
-    assert.strictEqual(detalle.params[4], 56000, 'subtotal = precio_unitario * cantidad');
-    assert.strictEqual(detalle.params[5], 'Ana: sin cebolla');
-    assert.strictEqual(detalle.params[6], 'pendiente');
+    // (id_pedido, id_plato, cantidad, notas_especiales) — el backend ya no manda
+    // precio_unitario ni subtotal: el precio sale de una subconsulta a platos y
+    // el subtotal lo calcula el trigger tr_validar_detalle_pedido.
+    assert.deepStrictEqual(detalle.params, [87, 12, 2, 'Ana: sin cebolla']);
+    assert.ok(
+      detalle.sql.includes('(SELECT precio FROM platos WHERE id_plato = $2)'),
+      'el precio lo congela la base en el propio INSERT'
+    );
+    assert.ok(!detalle.sql.includes('subtotal'), 'el backend no manda subtotal');
   } finally {
     db.restaurar();
   }
