@@ -43,8 +43,34 @@ listo           -> entregado
 entregado       -> pagado
 ```
 
-No existe `listo -> cancelado` ni `entregado -> cancelado`, y `pagado` es terminal.
-Cobrar un pedido exige que esté en `entregado`.
+Es la máquina de estados completa: cualquier otro salto responde **409**. `pagado` es
+terminal. Verificado contra la base real de Jarrison, estado por estado:
+
+| Desde | → `pagado` | → `cancelado` |
+|---|---|---|
+| `recibido` | 409 | **permitido** |
+| `en_preparacion` | 409 | **permitido** |
+| `listo` | 409 | 409 |
+| `entregado` | **permitido** | 409 |
+
+### Regla de cobro: solo desde `entregado`
+
+`entregado → pagado` es la única transición que llega a `pagado`, así que
+`POST /transacciones` exige que el pedido esté en `entregado`. Cobrar un pedido en
+`recibido`, `en_preparacion` o `listo` responde 409 con el mensaje del trigger. En sala,
+el mesero tiene que marcar `entregado` **antes** de que caja cobre.
+
+Además, solo un `estado_transaccion = 'completada'` liquida el pedido: una transacción
+`pendiente`, `fallida` o `reembolsada` se guarda en `transacciones` pero deja el pedido
+en `entregado` (si liquidara, un pago rechazado liberaría la mesa y la cuenta quedaría
+como cobrada).
+
+### Regla de cancelación: solo desde `recibido` o `en_preparacion`
+
+`POST /pedidos/:id/cancelar` solo funciona mientras el pedido no se haya entregado.
+Desde `listo` o `entregado` responde 409: a esa altura la comida ya salió de cocina, así
+que la salida es cobrar, no cancelar. Un pedido `pagado` tampoco se puede cancelar.
+La función `cancelar_pedido()` de Jarrison aplica la misma regla.
 
 ---
 
@@ -185,7 +211,7 @@ mesa, no se emite ningún JWT.
 | **GET** | **/pedidos/mesa** | **comensal** | **Pedidos de la mesa de la sesión** *(reemplaza a `/pedidos/historial`)* |
 | GET | /pedidos/:id | autenticado | Detalle con sus ítems; un comensal solo ve los de su mesa (403 si no) |
 | PATCH | /pedidos/:id/estado | admin, cajero, mesero | Cambia el estado (cualquiera de los 6 válidos) |
-| POST | /pedidos/:id/cancelar | admin, cajero, mesero | Atajo que fija `estado = cancelado` |
+| POST | /pedidos/:id/cancelar | admin, cajero, mesero | Atajo que fija `estado = cancelado`. **Solo desde `recibido` o `en_preparacion`**; desde `listo`/`entregado` responde 409 |
 
 ### POST /pedidos
 
@@ -208,6 +234,11 @@ Body:
   (400 si falta).
 - `apodo` + `notas` se guardan juntos en `detalles_pedido.notas_especiales`
   (`"Ana: sin cebolla"`).
+- **`apodo`, `notas` y `notas_generales` no pueden contener `OVERRIDE_ADMIN`** (sin
+  distinguir mayúsculas): responde 400. El trigger `tr_validar_disponibilidad_plato`
+  usa ese marcador en `notas_especiales` como bypass administrativo para comandar un
+  plato agotado, y ese campo lo escribe el comensal — sin este filtro bastaría con
+  ponerse de apodo `OVERRIDE_ADMIN` para saltarse el control de disponibilidad.
 - `precio_unitario` se congela desde `platos.precio` dentro del propio INSERT (regla
   de negocio "Inmutabilidad de Precios"), nunca se toma del body.
 - `subtotal` y `total` los calculan los triggers; el backend relee el pedido antes de
@@ -289,7 +320,7 @@ Respuesta de `GET /kds/comandas`:
 Body:
 
 ```json
-{ "id_pedido": 87, "monto": 56000, "metodo_pago": "tarjeta", "referencia_externa": "ch_123", "estado_transaccion": "aprobada" }
+{ "id_pedido": 87, "monto": 56000, "metodo_pago": "tarjeta_credito", "referencia_externa": "ch_123", "estado_transaccion": "completada" }
 ```
 
 - `metodo_pago` es obligatorio, con los valores del CHECK del schema: `efectivo`,
@@ -301,7 +332,11 @@ Body:
 201: fila insertada en `transacciones`.
 
 **El pedido debe estar en `entregado`**: es la única transición que lleva a `pagado`.
-Cobrar desde otro estado responde 409 con el mensaje del trigger.
+Cobrar desde otro estado responde 409 con el mensaje del trigger (ver *Regla de cobro*).
+
+**Solo `estado_transaccion = 'completada'` liquida el pedido.** Con `pendiente`,
+`fallida` o `reembolsada` la transacción se registra igual (201) pero el pedido se queda
+en `entregado` y la mesa no se libera, así que se puede reintentar el cobro.
 
 409 también si el monto excede el saldo del pedido (`tr_validar_transaccion_financiera`,
 que además deja constancia en `intentos_pago_fallidos`).
@@ -315,12 +350,22 @@ anterior se archiva en `token_qr_historico`.
 
 ## Pendiente por acordar con el equipo
 
-- **Valores de `mesas.estado`:** el modelo ER lo declara `varchar` sin enumerarlos. El
-  backend usa `disponible` / `ocupada` / `reservada`, según `database/README.md` de
-  Jarrison (antes usaba `libre`). **Confirmar con Jarrison** si el `CHECK` del
-  `schema.sql` coincide.
-- **Valores de `detalles_pedido.estado_item`:** tampoco están enumerados en el modelo.
-  El backend los crea en `pendiente`. **Confirmar con Jarrison.**
+Ya resueltos contra el `schema.sql` de Jarrison: `mesas.estado` es
+`disponible`/`ocupada`/`reservada`/`mantenimiento` y `detalles_pedido.estado_item` es
+`pendiente`/`cocinando`/`listo`/`servido`/`cancelado`. El backend usa esos valores.
+
+Sigue abierto:
+
+- **Nadie marca la mesa como `ocupada`.** Lo hacía la función `crear_pedido()`, que este
+  backend no usa (hace `INSERT` directo para que actúen los triggers). Ningún trigger lo
+  cubre, así que una mesa con pedidos activos sigue en `disponible`. Sí se libera al
+  pagar (`tr_regenerar_token_qr`). **Falta decidir** si lo hace el backend o un trigger
+  nuevo de Jarrison.
+- **`transiciones_validas.requiere_usuario` está declarado pero no se aplica.** Cuatro
+  transiciones lo tienen en `TRUE`; el trigger `tr_validar_transicion_estado` no lo
+  valida (solo lo mira `cambiar_estado_pedido()`, que no usamos). El backend manda
+  `id_usuario = null` cuando el cambio lo hace un comensal: si Jarrison llega a
+  aplicarlo, esos cambios empezarían a fallar.
 - Validación de vigencia del token QR contra Redis: ¿la hace este backend o confía en
   que Roberto ya la hizo?
 - `suscripciones_push` está en el modelo ER pero todavía no la consume ningún endpoint

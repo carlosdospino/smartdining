@@ -2,21 +2,30 @@ const { z } = require('zod');
 const pedidosService = require('../services/pedidos.service');
 const { esComensal } = require('../middleware/auth.middleware');
 
+// El trigger tr_validar_disponibilidad_plato de Jarrison deja comandar un plato
+// agotado si notas_especiales contiene 'OVERRIDE_ADMIN' (bypass administrativo).
+// Ese campo se arma con texto que escribe el comensal (su apodo y su nota), así
+// que el marcador se rechaza en el body: de lo contrario cualquiera se pone de
+// apodo "OVERRIDE_ADMIN" y se salta el control de disponibilidad.
+const MARCADOR_OVERRIDE = /override_admin/i;
+const MENSAJE_OVERRIDE = 'El texto no puede contener OVERRIDE_ADMIN';
+const sinOverride = (valor) => !MARCADOR_OVERRIDE.test(valor);
+
 // El apodo es el nombre que el comensal se puso en el carrito colaborativo
 // ("Ana", "Pipe"): identifica quién agregó cada ítem y se guarda en
 // detalles_pedido.notas_especiales, junto con la nota del ítem si la hay.
 const itemSchema = z.object({
   id_plato: z.number().int(),
   cantidad: z.number().int().positive(),
-  apodo: z.string().min(1).max(40).optional(),
-  notas: z.string().max(200).optional(),
+  apodo: z.string().min(1).max(40).refine(sinOverride, MENSAJE_OVERRIDE).optional(),
+  notas: z.string().max(200).refine(sinOverride, MENSAJE_OVERRIDE).optional(),
 });
 
 // id_mesa es opcional en el body porque para un comensal se toma del token y se
 // ignora lo que venga aquí; para el personal (mesero/admin) es obligatorio.
 const crearPedidoSchema = z.object({
   id_mesa: z.number().int().optional(),
-  notas_generales: z.string().max(500).optional(),
+  notas_generales: z.string().max(500).refine(sinOverride, MENSAJE_OVERRIDE).optional(),
   items: z.array(itemSchema).min(1),
 });
 

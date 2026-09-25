@@ -31,9 +31,14 @@ exponer el detalle. Todo eso se decide en un único lugar:
 
 ## Recrear la base de datos local
 
-El `database/README.md` de Jarrison no documenta el orden de ejecución; sale de las
-dependencias entre scripts (`01_tablas_complementarias.sql` hace `ALTER TABLE mesas` y
-`11_seed_data.sql` deriva `token_qr_historico` de las filas de `mesas`). El orden es:
+El `database/README.md` de Jarrison no documenta el orden de ejecución. Desde el commit
+`7556518` el bootstrap es **el runner y después el seed**: `00_ejecutar_todo.sql` ejecuta
+`../schema.sql` él mismo como paso `[0/13]`, y ese schema arranca con `DROP TABLE` de las
+15 tablas — por eso el seed va al final, o se borraría. Además el seed ahora inserta
+`transiciones_validas`, que existe recién después del paso 0.
+
+> Antes del `7556518` el orden era el inverso (`schema.sql` → `seed.sql` → runner).
+> Conviene volver a mirar el runner cada vez que Jarrison actualice la rama.
 
 ```bash
 # 1. Traer la version mas reciente de la rama de Jarrison, sin mezclarla:
@@ -41,26 +46,26 @@ dependencias entre scripts (`01_tablas_complementarias.sql` hace `ALTER TABLE me
 git fetch origin
 git archive origin/feature/base-datos database/ | tar -x -C /ruta/temporal
 
-cd /ruta/temporal/database
 export PGPASSWORD=...            # el de backend/.env
 
 # 2. Recrear la base vacia
 psql -h localhost -U postgres -d postgres -c "DROP DATABASE IF EXISTS smartdining;"
 psql -h localhost -U postgres -d postgres -c "CREATE DATABASE smartdining ENCODING 'UTF8';"
 
-# 3. Los tres pasos, en este orden
-psql -h localhost -U postgres -d smartdining -v ON_ERROR_STOP=1 -f schema.sql
-psql -h localhost -U postgres -d smartdining -v ON_ERROR_STOP=1 -f seed.sql
-cd scripts
+# 3. El runner (incluye schema.sql). OJO: usa "\i" con rutas relativas,
+#    hay que ejecutarlo con el cwd en scripts/
+cd /ruta/temporal/database/scripts
 psql -h localhost -U postgres -d smartdining -v ON_ERROR_STOP=1 -f 00_ejecutar_todo.sql
-#   OJO: el runner usa "\i" con rutas relativas, hay que ejecutarlo desde scripts/
 
-# 4. Si el hash del seed no corresponde a Admin123!, fijarlo (ver nota abajo):
-cd -   # volver a backend/
+# 4. El seed, DESPUES del runner
+psql -h localhost -U postgres -d smartdining -v ON_ERROR_STOP=1 -f ../seed.sql
+
+# 5. Solo si el hash del seed no corresponde a Admin123! (el seed nuevo ya lo trae):
+#    desde backend/
 psql -h localhost -U postgres -d smartdining -f scripts/fijar-password-demo.sql
 ```
 
-Usuarios demo tras el paso 4 (todos con `Admin123!`): `admin@smartdining.com`,
+Usuarios demo (todos con `Admin123!`): `admin@smartdining.com`,
 `cocina@smartdining.com`, `mesero@smartdining.com`, `caja@smartdining.com`.
 Token QR de la mesa 1 recién sembrada: `qr-token-mesa-01-a1b2c3d4`.
 
@@ -123,7 +128,7 @@ escanea el QR
 npm test
 ```
 
-28 pruebas con `node --test` + `supertest`. No hacen falta PostgreSQL ni Redis:
+41 pruebas con `node --test` + `supertest`. No hacen falta PostgreSQL ni Redis:
 `tests/helpers/fake-db.js` reemplaza `pool.query`/`pool.connect` por dobles en memoria
 y registra las queries ejecutadas, así que las pruebas también verifican con qué
 valores llega cada `INSERT`.
@@ -159,6 +164,9 @@ valores llega cada `INSERT`.
 - [x] Probado contra el `schema.sql` real de Jarrison: login, catálogo, sesión de comensal, pedido, ciclo completo de estados y cobro
 - [x] Totales, subtotales, transiciones y disponibilidad delegados a los triggers
 - [x] Errores de la base traducidos en un solo lugar (409 para `P0001`, 500 genérico para el resto)
+- [x] `OVERRIDE_ADMIN` rechazado en apodos y notas (era un bypass del control de disponibilidad)
+- [x] Solo un cobro `completada` liquida el pedido
+- [ ] Decidir quién marca la mesa como `ocupada`: ningún trigger lo hace y este backend no usa `crear_pedido()`
 - [ ] Cache de sesiones con Redis (conexión lista, falta integrarla en el middleware de auth)
 - [ ] Validar el TTL del token QR contra Redis, o confirmar que Roberto ya lo validó
 - [ ] Disparar los eventos de WebSocket hacia socket-server en los puntos ya marcados con `NOTA` en el código (coordinar con Roberto)
